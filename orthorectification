@@ -1,0 +1,182 @@
+import time
+import matplotlib.pyplot as plt
+import pyproj
+from pyproj import Proj, transform
+import cv2
+import numpy as np
+from tqdm import tqdm
+
+# 读取图像文件
+image = cv2.imread('2023-06-28-16-01-46_494.jpg')
+
+H = image.shape[0]  # y
+W = image.shape[1]  # x
+pixel = 0.0000024  # 像元大小# (3648, 5472, 3)偶数结果为整数 2.4um
+x0 = 0.0000002
+y0 = 0.0000002    # 像主点坐标相对于框标中心的坐标
+f = 0.012  # 焦距12mm
+XS = 40371692.99547118  # 影像的投影中心的地面点坐标
+YS = 3538499.811265133
+lon = 118.638916        #经度
+lat = 31.96181134       #纬度
+H_G = 231.2836243       # 航高
+d = (pixel * H_G) / f  # 影像分辨率（像元尺寸*航高）/f
+ZS = H_G
+
+
+
+#roll = np.deg2rad(-(-177.188 + 180))  # 翻滚角X   kappa
+roll = np.deg2rad(10)
+#pitch = np.deg2rad(-(-75.40954 + 90))  # 俯仰角Y  phi
+pitch = np.deg2rad(-5)
+#yew = np.deg2rad(-(-132.2674 + 180))  # 旋偏角Z  omage
+yew = np.deg2rad(-132.2674)
+Z = 0
+print(image.shape)
+#image_3d = np.expand_dims(image, axis=2)
+array_sum = np.empty((1, 3))  # 创建一个二维数组
+########地理坐标(B,L,H)纬度,经度,高程-->投影坐标(X,Y,Z)转换############
+# X = (N + H_G)*np.cos(h_lat)*np.cos(h_lon)
+# Y = (N + H_G)*np.cos(h_lat)*np.sin(h_lon)
+# Zx = (N * (1-e2)+H_G)* np.sin(h_lat)
+# print(X,Y,Zx)
+
+"""
+src_epsg = 'EPSG:4326'
+dst_epsg = 'EPSG:4519'
+
+# 创建Proj对象
+src_projection= Proj(init =src_epsg )
+dst_projection= Proj(init =dst_epsg )
+#输入 无人机经纬度
+lon =
+lat =
+XS,YS = transform(src_projection,dst_projection,lon,lat)#投影中心坐标
+"""
+'''def geodetic_to_cartesian(lat,lon ,H_G):
+#定义WGS84大地坐标系和空间直角坐标系
+    wgs84 = pyproj.Proj(proj = 'latlong',datum = 'WGS84',ellps = 'WGS84')
+    cartesian =   pyproj.Proj(proj = 'geocent',datum ='WGS84' ,ellps = 'WGS84')
+    #转换大地坐标为直角坐标
+    XS,YS,ZS = pyproj.transform.Transform(wgs84,cartesian,lon,lat,H_G)
+#    YS = pyproj.transform(wgs84,cartesian,lat)
+#    ZS = pyproj.transform(wgs84,cartesian,H_G)
+    return XS,YS,ZS
+XS,YS,ZS= geodetic_to_cartesian(lat,lon ,H_G)'''
+def uav_rotate_matrix(roll, pitch, yew):  # 无人机的三维旋转像平面坐标向像辅系直角坐标系（X,Y,Z）=R@(x,y,f)T的转变
+    # R = np.deg2rad(RX)  # Roll-X转换角度为弧度，翻滚角 phi       omiga
+    # P = np.deg2rad(RY)  # Pitch-Y俯仰角                      fai
+    # Y = np.deg2rad(RZ)  # Yaw-Z偏航角                        kappa
+    R = roll
+    P = pitch
+    Y = yew
+    Rx = np.array([[1, 0, 0],
+                   [0, np.cos(R), -np.sin(R)],
+                   [0, np.sin(R), np.cos(R)]])
+    Ry = np.array([[np.cos(P), 0, -np.sin(P)],
+                   [0, 1, 0],
+                   [np.sin(P), 0, np.cos(P)]])
+    Rz = np.array([[np.cos(Y), -np.sin(Y), 0],
+                   [np.sin(Y), np.cos(Y), 0],
+                   [0, 0, 1]])
+    R3d = Ry @ Rx @ Rz
+    return R3d
+
+#旋转矩阵R-->d_3d
+d_3d = uav_rotate_matrix(roll, pitch, yew)
+
+# 定义一个新矩阵来存放校正后影像。pixel    x  = (I-0.5W)*pixel-x0;y = (0.5*H-J)*pixel-y0
+# 第一步：原始影像4角点的像平面坐标(xa,ya),(xb,yb),(xc,yc),(xd,yd)以相片中心为原点写个点的坐标
+point_A = [-0.5 * W * pixel - x0, 0.5 * H * pixel - y0]
+point_B = [0.5 * W * pixel - x0, 0.5 * H * pixel - y0]
+point_C = [-0.5 * W * pixel - x0, -0.5 * H * pixel - y0]
+point_D = [0.5 * W * pixel - x0, -0.5 * H * pixel - y0]
+# 第二步：利用共线条件方程求解4点的地辅系坐标Z=0(因为在地面)
+'''
+a1 = np.cos(roll) * np.cos(pitch) - np.sin(roll) * np.sin(yew) * np.sin(pitch)
+a2 = -np.cos(roll) * np.sin(pitch) - np.sin(roll) * np.sin(yew) * np.cos(pitch)
+a3 = -np.sin(roll) * np.cos(yew)
+b1 = np.cos(yew) * np.sin(pitch)
+b2 = np.cos(yew) * np.cos(pitch)
+b3 = -np.sin(yew)
+c1 = np.sin(roll) * np.cos(pitch) + np.cos(roll) * np.sin(yew) * np.sin(pitch)
+c2 = -np.sin(roll) * np.sin(pitch) + np.cos(roll) * np.sin(yew) * np.cos(pitch)
+c3 = np.cos(roll) * np.cos(yew)
+'''
+a1 = uav_rotate_matrix(roll, pitch, yew)[0, 0] # X_Y_Z
+a2 = uav_rotate_matrix(roll, pitch, yew)[0, 1]
+a3 = uav_rotate_matrix(roll, pitch, yew)[0, 2]
+b1 = uav_rotate_matrix(roll, pitch, yew)[1, 0]
+b2 = uav_rotate_matrix(roll, pitch, yew)[1, 1]
+b3 = uav_rotate_matrix(roll, pitch, yew)[1, 2]
+c1 = uav_rotate_matrix(roll, pitch, yew)[2, 0]
+c2 = uav_rotate_matrix(roll, pitch, yew)[2, 1]
+c3 = uav_rotate_matrix(roll, pitch, yew)[2, 2]
+
+XA = (Z - ZS) * ((a1 * point_A[0] + a2 * point_A[1] - a3 * f) / (c1 * point_A[0] + c2 * point_A[1] - c3 * f)) + XS
+YA = (Z - ZS) * ((b1 * point_A[0] + b2 * point_A[1] - b3 * f) / (c1 * point_A[0] + c2 * point_A[1] - c3 * f)) + YS
+XB = (Z - ZS) * ((a1 * point_B[0] + a2 * point_B[1] - a3 * f) / (c1 * point_B[0] + c2 * point_B[1] - c3 * f)) + XS
+YB = (Z - ZS) * ((b1 * point_B[0] + b2 * point_B[1] - b3 * f) / (c1 * point_B[0] + c2 * point_B[1] - c3 * f)) + YS
+XC = (Z - ZS) * ((a1 * point_C[0] + a2 * point_C[1] - a3 * f) / (c1 * point_C[0] + c2 * point_C[1] - c3 * f)) + XS
+YC = (Z - ZS) * ((b1 * point_C[0] + b2 * point_C[1] - b3 * f) / (c1 * point_C[0] + c2 * point_C[1] - c3 * f)) + YS
+XD = (Z - ZS) * ((a1 * point_D[0] + a2 * point_D[1] - a3 * f) / (c1 * point_D[0] + c2 * point_D[1] - c3 * f)) + XS
+YD = (Z - ZS) * ((b1 * point_D[0] + b2 * point_D[1] - b3 * f) / (c1 * point_D[0] + c2 * point_D[1] - c3 * f)) + YS
+
+# 第三步：判断Xi，Yi的最大最小值
+arr_X = [XA, XB, XC, XD]
+arr_Y = [YA, YB, YC, YD]
+X_max = np.max(arr_X)
+X_mix = np.min(arr_X)
+Y_max = np.max(arr_Y)
+Y_mix = np.min(arr_Y)
+# 第四步：求校正后影像的行列值（raw,col）
+col = int((X_max - X_mix) / d)   # 要取整的
+raw = int((Y_max - Y_mix) / d)
+# 第五步：要建立校正影像的二维矩阵
+matrix = new_image = np.zeros((raw, col,3), dtype=np.uint8)
+# 第六步：校正影像各像元对应坐标#利用像空间坐标系与像辅系间的转换关系，求得校正影像各像元点对应地面点坐标向像平面坐标的转换。
+result_list = []
+#x_min = -0.5 * col * pixel
+#x_max = 0.5 * col * pixel
+
+
+
+for i in range(raw):
+    for j in range(col):  # 对应的Z值 0 m
+        X = X_mix + j * d
+        Y = Y_max - i * d
+        x = -f * ((a1 * (X - XS) + b1 * (Y - YS) + c1*(Z - ZS)) / (a3 * (X - XS) + b3 * (Y - YS) + c3 * (Z - ZS))) # 由地面点对应像平面坐标x，y
+        y = -f * ((a2 * (X - XS) + b2 * (Y - YS) + c2*(Z - ZS)) / (a3 * (X - XS) + b3 * (Y - YS) + c3 * (Z - ZS)))
+        # 由像平面坐标转换成浮点行列值
+        x_i = (x + x0) / pixel + 0.5 * col
+        y_i = -((y + y0) / pixel) + 0.5 * raw
+        if x_i <1 or x_i >H-1 or y_i < 1 or y_i >W -1:
+            matrix[i,j,:] = 255
+        else:
+            x1, x2 = int(x_i), int(x_i) + 1
+            y1, y2 = int(y_i), int(y_i) + 1
+            dx, dy = x_i - x1 , y_i - y1
+            matrix[i,j ,0] =int((1-dx)*(1-dy)*image[x1-1,y1-1,0] \
+                                + dx *(1-dy)*image[x1+1,y1-1,0] \
+                                + (1-dx)*dy *image[x1+1,y1-1,0] \
+                                + dx*dy *image[x1+1,y1+1,0])
+            matrix[i, j, 1] = int((1 - dx) * (1 - dy) * image[x1 - 1, y1 - 1, 1] \
+                                  + dx * (1 - dy) * image[x1 + 1, y1 - 1, 1] \
+                                  + (1 - dx) * dy * image[x1 + 1, y1 - 1, 1] \
+                                  + dx * dy * image[x1 + 1, y1 + 1, 1])
+            matrix[i, j, 2] = int((1 - dx) * (1 - dy) * image[x1 - 1, y1 - 1, 2] \
+                                  + dx * (1 - dy) * image[x1 + 1, y1 - 1, 2] \
+                                  + (1 - dx) * dy * image[x1 + 1, y1 - 1, 2] \
+                                  + dx * dy * image[x1 + 1, y1 + 1, 2])
+        #print(x_i, y_i)
+        #print(x,y)
+        # rotated_points = np.dot(np.transpose(uav_rotate_matrix(roll,pitch,yew)), np.array([X, Y, Z]))  # 得到结果是旋转后坐标
+        # result_list.append(rotated_points)
+plt.imshow(matrix)
+plt.show()
+        # if x > x_max or Y > Y_max:
+        #
+        #     else:
+        #     print()
+
+#result_matrix = np.array(result_list)  # 所有坐标都计算完成，此时求得的结果将由于双线性内插。
